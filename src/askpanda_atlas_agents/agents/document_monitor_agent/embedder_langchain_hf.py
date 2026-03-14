@@ -36,7 +36,7 @@ def _instantiate_local_hf(model_name: str):
     """Try to instantiate a local HuggingFace embedder (may require heavy deps)."""
     try:
         # langchain-community wrapper for local models can instantiate from model_name
-        from langchain_community.embeddings import HuggingFaceEmbeddings  # type: ignore
+        from langchain_huggingface import HuggingFaceEmbeddings  # type: ignore
     except Exception as e:
         raise RuntimeError("langchain_community not available") from e
 
@@ -89,7 +89,7 @@ class LangchainHuggingFaceAdapter:
             LOG.info("Using local HuggingFaceEmbeddings for model '%s'", self.model_name)
             return
         except Exception as e:
-            LOG.debug("Local HF instantiation failed: %s", e)
+            LOG.warning("Local HF instantiation failed (will try hub or dummy): %s", e)
 
         # 2) If HF hub token available, try remote/hub instantiation
         hub_token = os.getenv("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HF_TOKEN") or os.getenv("HF_API_TOKEN")

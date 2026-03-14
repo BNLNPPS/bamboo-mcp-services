@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 from collections.abc import Callable
 from typing import Any, Optional
 
 from .agent import DocumentMonitorAgent
-from .agent.embedder_langchain_hf import LangchainHuggingFaceAdapter
+from .embedder_langchain_hf import LangchainHuggingFaceAdapter
 
-LOG = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,16 +104,14 @@ def _make_signal_handler(
     """
 
     def _handler(_signum: int, _frame: Any) -> None:
-        LOG.info("Signal received; attempting graceful shutdown.")
+        logger.info("Signal received; attempting graceful shutdown.")
         try:
-            if hasattr(agent, "request_stop"):
-                agent.request_stop()
-            elif hasattr(agent, "stop"):
+            if hasattr(agent, "stop"):
                 agent.stop()
             else:
-                LOG.warning("Agent has no request_stop/stop; nothing to call.")
+                logger.warning("Agent has no stop method; nothing to call.")
         except Exception:
-            LOG.exception("Error while requesting agent to stop.")
+            logger.exception("Error while requesting agent to stop.")
 
     return _handler
 
@@ -192,8 +191,9 @@ def _run_agent(agent: DocumentMonitorAgent) -> None:
         while _agent_is_running(agent):
             agent.tick()
     except KeyboardInterrupt:
-        LOG.info("KeyboardInterrupt received")
-        agent.request_stop()
+        logger.info("KeyboardInterrupt received; shutting down.")
+        agent.stop()
+        return
     finally:
         agent.stop()
 
@@ -217,6 +217,18 @@ def main(argv: Optional[list[str]] = None) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    # Suppress verbose third-party loggers — model is loaded from local cache
+    for _noisy in ("httpx", "httpcore", "huggingface_hub", "sentence_transformers"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+    # Align sentence_transformers cache with the HuggingFace hub cache so that
+    # models downloaded via HF hub are found when running in offline mode.
+    # Only set if not already overridden in the environment.
+    _hf_hub_cache = os.path.expanduser("~/.cache/huggingface/hub")
+    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", _hf_hub_cache)
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
     agent = _build_agent(args)
     signal.signal(signal.SIGTERM, _make_signal_handler(agent))

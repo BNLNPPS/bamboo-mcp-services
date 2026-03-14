@@ -90,127 +90,120 @@ class DocumentMonitorAgent(Agent):
 
         Creates the monitored directory if missing and performs any one-time init.
         """
-        LOG.info("document_monitor_agent starting. Monitoring: %s", self.directory)
+        try:
+            from importlib.metadata import version
+            _version = version("askpanda-atlas-agents")
+        except Exception:
+            _version = "unknown"
+        LOG.info("document-monitor-agent v%s starting. Monitoring: %s", _version, self.directory)
         self.directory.mkdir(parents=True, exist_ok=True)
+
+    def _is_file_changed(self, path_str: str, text: str) -> tuple[bool, str, list]:
+        """Check whether a file needs ingesting by comparing its content hash to the checkpoint.
+
+        Returns:
+            Tuple of (changed, content_hash, prev_chunk_ids).
+        """
+        h = content_hash(text)
+        prev = self.checkpoint._data.get("processed", {}).get(path_str)
+        prev_hash = prev.get("content_hash") if prev else None
+        prev_chunk_ids = prev.get("chunk_ids", []) if prev else []
+
+        if prev_hash == h:
+            return False, h, prev_chunk_ids
+
+        if prev_hash is None:
+            LOG.info("New file detected: %s", path_str)
+        else:
+            LOG.info("File changed, re-ingesting: %s", path_str)
+
+        return True, h, prev_chunk_ids
+
+    def _ingest_file(self, path_str: str, text: str, h: str, prev_chunk_ids: list) -> None:
+        """Chunk, embed, and store a single file into ChromaDB, then update the checkpoint."""
+        chunks = chunk_text(text, chunk_size=self.chunk_size, overlap=self.chunk_overlap)
+        ts = datetime.now(timezone.utc).isoformat()
+
+        if not chunks:
+            LOG.debug("No chunks generated for %s; recording empty checkpoint.", path_str)
+            self.checkpoint.mark_processed(path_str, {"content_hash": h, "processed_ts": ts, "chunks": 0, "chunk_ids": []})
+            self._last_processed_file = path_str
+            self._last_error = None
+            return
+
+        ids: List[str] = [deterministic_chunk_id(path_str, "", i) for i in range(len(chunks))]
+        metadatas: List[Dict] = [
+            {"source_file": path_str, "chunk_index": i, "content_hash": h, "processed_ts": ts}
+            for i in range(len(chunks))
+        ]
+
+        if prev_chunk_ids:
+            try:
+                self.chroma.delete_documents_by_ids(self.collection, prev_chunk_ids)
+                LOG.debug("Deleted %d previous chunk ids for %s", len(prev_chunk_ids), path_str)
+            except Exception:
+                LOG.exception("Failed to delete previous chunk ids for %s (best-effort)", path_str)
+
+        self._ensure_embedder()
+        raw_embeddings = self._embedder.encode(chunks, show_progress_bar=False)
+        try:
+            embeddings = raw_embeddings.tolist()  # type: ignore[attr-defined]
+        except Exception:
+            embeddings = [list(map(float, v)) for v in raw_embeddings]
+
+        self.chroma.add_documents(self.collection, ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
+        self.chroma.persist()
+        self.checkpoint.mark_processed(path_str, {"content_hash": h, "processed_ts": ts, "chunks": len(chunks), "chunk_ids": ids})
+
+        self._last_processed_file = path_str
+        self._last_error = None
+        LOG.info("Processed file %s -> chunks=%d", path_str, len(chunks))
 
     def _tick_impl(self) -> None:
         """Perform one polling cycle: detect new/changed files, ingest chunks into ChromaDB.
 
-        Workflow:
-        1. List files (non-recursive) in the monitored directory.
-        2. For each file:
-           - Extract text.
-           - Compute content hash.
-           - If previously processed and hash unchanged -> skip.
-           - Otherwise chunk text, compute deterministic stable chunk IDs (based on path+index),
-             compute embeddings, delete previous chunks (if any), add new chunks to Chroma,
-             persist chroma and update checkpoint with new chunk_ids + content_hash.
-        3. Sleep for `self.poll_interval_sec` at the end of the cycle.
-
-        The function is resilient: it logs errors per-file and continues processing other files.
-        It also records `self._last_processed_file` and `self._last_error` for health reporting.
+        Lists files in the monitored directory, skips unchanged files, and ingests
+        any that are new or modified. Logs a summary at the end of each cycle.
+        Errors are caught per-file so one bad file does not abort the whole cycle.
         """
         try:
             files = sorted([p for p in self.directory.iterdir() if p.is_file()])
-        except Exception as exc:  # defensive: directory listing may fail
+        except Exception as exc:
             LOG.exception("Failed listing directory %s: %s", self.directory, exc)
             self._last_error = str(exc)
             time.sleep(self.poll_interval_sec)
             return
 
+        processed_count = 0
+        skipped_count = 0
+
         for p in files:
             path_str = str(p.resolve())
             try:
-                # 1) extract text and compute content hash
                 text = extract_text_from_file(path_str)
                 if not text:
                     LOG.debug("No text extracted from %s; skipping.", path_str)
                     continue
-                h = content_hash(text)
 
-                # 2) check checkpoint to decide whether to skip or update
-                prev = self.checkpoint._data.get("processed", {}).get(path_str)
-                prev_hash = prev.get("content_hash") if prev else None
-                prev_chunk_ids = prev.get("chunk_ids", []) if prev else []
-
-                if prev_hash == h:
-                    LOG.debug("File unchanged since last processing: %s", path_str)
-                    continue  # nothing to do
-
-                # 3) chunk the text
-                chunks = chunk_text(text, chunk_size=self.chunk_size, overlap=self.chunk_overlap)
-                if not chunks:
-                    LOG.debug("No chunks generated for %s; recording empty checkpoint.", path_str)
-                    self.checkpoint.mark_processed(
-                        path_str,
-                        {
-                            "content_hash": h,
-                            "processed_ts": datetime.now(timezone.utc).isoformat(),
-                            "chunks": 0,
-                            "chunk_ids": [],
-                        },
-                    )
-                    self._last_processed_file = path_str
-                    self._last_error = None
+                changed, h, prev_chunk_ids = self._is_file_changed(path_str, text)
+                if not changed:
+                    skipped_count += 1
                     continue
 
-                # 4) deterministic stable IDs (based on path + chunk index only)
-                ids: List[str] = [deterministic_chunk_id(path_str, "", i) for i in range(len(chunks))]
-                metadatas: List[Dict] = [
-                    {
-                        "source_file": path_str,
-                        "chunk_index": i,
-                        "content_hash": h,
-                        "processed_ts": datetime.now(timezone.utc).isoformat(),
-                    }
-                    for i in range(len(chunks))
-                ]
-
-                # 5) if previous chunk ids exist, delete them first to avoid stale vectors
-                if prev_chunk_ids:
-                    try:
-                        self.chroma.delete_documents_by_ids(self.collection, prev_chunk_ids)
-                        LOG.debug("Deleted %d previous chunk ids for %s", len(prev_chunk_ids), path_str)
-                    except Exception:
-                        LOG.exception("Failed to delete previous chunk ids for %s (best-effort)", path_str)
-
-                # 6) ensure embedder and compute embeddings
-                self._ensure_embedder()
-                raw_embeddings = self._embedder.encode(chunks, show_progress_bar=False)
-
-                # normalize embeddings to python lists for chroma
-                try:
-                    embeddings = raw_embeddings.tolist()  # type: ignore[attr-defined]
-                except Exception:
-                    embeddings = [list(map(float, v)) for v in raw_embeddings]
-
-                # 7) add to chroma and persist
-                self.chroma.add_documents(self.collection, ids=ids, documents=chunks, metadatas=metadatas,
-                                          embeddings=embeddings)
-                self.chroma.persist()
-
-                # 8) update checkpoint with new chunk ids and metadata
-                self.checkpoint.mark_processed(
-                    path_str,
-                    {
-                        "content_hash": h,
-                        "processed_ts": datetime.now(timezone.utc).isoformat(),
-                        "chunks": len(chunks),
-                        "chunk_ids": ids,
-                    },
-                )
-
-                self._last_processed_file = path_str
-                self._last_error = None
-                LOG.info("Processed file %s -> chunks=%d", path_str, len(chunks))
+                self._ingest_file(path_str, text, h, prev_chunk_ids)
+                processed_count += 1
 
             except Exception as exc:
-                # per-file failure should not stop the tick loop
                 LOG.exception("Error processing file %s: %s", path_str, exc)
                 self._last_error = str(exc)
-                # continue with next file
 
-        # Sleep for the configured poll interval before the next tick run.
+        if processed_count > 0:
+            LOG.info("Poll cycle complete: %d file(s) ingested, %d unchanged. Next poll in %ds.",
+                     processed_count, skipped_count, self.poll_interval_sec)
+        else:
+            LOG.debug("Poll cycle complete: no changes detected (%d file(s) unchanged). Next poll in %ds.",
+                      skipped_count, self.poll_interval_sec)
+
         time.sleep(self.poll_interval_sec)
 
     def _stop_impl(self) -> None:

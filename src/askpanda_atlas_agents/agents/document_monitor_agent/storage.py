@@ -30,22 +30,22 @@ class ChromaWrapper:
         """
         settings_kwargs = settings_kwargs or {}
         try:
-            # Preferred: explicit, newer Settings-based construction
-            settings = Settings(chroma_db_impl="duckdb+parquet", persist_directory=persist_directory, **settings_kwargs)
-            self.client = chromadb.Client(settings=settings)
-            LOG.info("Created chromadb.Client using Settings (persist_directory=%s)", persist_directory)
-        except Exception as exc:
-            # If the installed chromadb version rejects the Settings shape, fall back.
-            LOG.warning(
-                "Failed to create chromadb.Client with Settings (falling back to chromadb.Client()). "
-                "This may mean you have a different chromadb release that requires migration. Error: %s", exc
-            )
+            # Preferred: modern API available since chromadb 0.4
+            self.client = chromadb.PersistentClient(path=persist_directory)
+            LOG.info("Created chromadb.PersistentClient (persist_directory=%s)", persist_directory)
+        except AttributeError:
+            # Fallback for older chromadb (<0.4) that uses Settings-based construction
+            LOG.debug("chromadb.PersistentClient not available; falling back to legacy Settings-based client.")
             try:
-                # Best-effort fallback: plain client constructor (version-dependent behavior)
-                self.client = chromadb.Client()
-                LOG.info("Created chromadb.Client using fallback no-arg constructor")
+                settings = Settings(
+                    chroma_db_impl="duckdb+parquet",
+                    persist_directory=persist_directory,
+                    **settings_kwargs,
+                )
+                self.client = chromadb.Client(settings=settings)
+                LOG.info("Created chromadb.Client using legacy Settings (persist_directory=%s)", persist_directory)
             except Exception as exc2:
-                LOG.exception("Failed to create fallback chromadb.Client() - chroma is not usable: %s", exc2)
+                LOG.exception("Failed to create chromadb client: %s", exc2)
                 raise
 
     def get_or_create_collection(self, name: str) -> Collection:
@@ -107,10 +107,13 @@ class ChromaWrapper:
                 LOG.exception("Failed to delete id %s from chroma collection (best-effort)", _id)
 
     def persist(self) -> None:
-        """Persist the client's state to disk, ignoring errors."""
+        """Persist the client's state to disk if supported.
+
+        chromadb.PersistentClient (>=0.4) persists automatically on every write,
+        so this is a no-op for modern versions. Kept for compatibility with older
+        clients that require an explicit persist() call.
+        """
         try:
-            # The Client API provides persist() in common versions
             self.client.persist()
         except Exception:
-            LOG.debug("Chroma persist() failed or not supported in this client release.", exc_info=True)
-            # best-effort; do not raise here
+            LOG.debug("Chroma persist() not supported in this client release (safe to ignore).", exc_info=True)

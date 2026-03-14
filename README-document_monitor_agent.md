@@ -11,7 +11,7 @@ A production-oriented agent that watches a directory for new or changed document
 - Splits text into overlapping character chunks.
 - Generates deterministic chunk IDs (stable across re-ingestion).
 - Embeds chunks using a pluggable embedder (default: `sentence-transformers`).
-- Stores vectors and metadata in ChromaDB (`duckdb+parquet` backend).
+- Stores vectors and metadata in ChromaDB (persistent local backend).
 - Maintains a JSON checkpoint store to prevent re-processing unchanged files.
 - Replaces stale vectors when file content changes.
 
@@ -74,7 +74,7 @@ PyTorch is installed via conda because it provides pre-compiled binaries tested 
 ### Step 3 — Install remaining dependencies
 
 ```bash
-pip install sentence-transformers langchain langchain-community chromadb pdfminer.six python-docx
+pip install sentence-transformers langchain langchain-community langchain-huggingface chromadb pdfminer.six python-docx
 pip install -r requirements.txt
 ```
 
@@ -99,6 +99,12 @@ Or via module:
 ```bash
 python -m askpanda_atlas_agents.agents.document_monitor_agent.cli --dir ./documents
 ```
+
+> **First run on a new machine:** the agent loads the embedding model from local cache and avoids network calls on startup. This means the model must be downloaded at least once first. On a fresh machine, trigger the download by running with `HF_HUB_OFFLINE=0`:
+> ```bash
+> HF_HUB_OFFLINE=0 askpanda-document-monitor-agent --dir ./documents --poll-interval 10 --chroma-dir .chromadb
+> ```
+> Subsequent runs will use the cached model automatically and do not need the flag.
 
 ---
 
