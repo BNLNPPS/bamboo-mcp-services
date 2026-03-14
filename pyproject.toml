@@ -13,6 +13,7 @@ dev = [
     "flake8",
     "pytest",
     "pytest-cov",
+    "duckdb",
 ]
 
 [tool.setuptools]
