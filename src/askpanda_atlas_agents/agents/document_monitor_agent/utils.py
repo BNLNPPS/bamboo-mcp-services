@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import List, Dict
 
@@ -36,13 +37,15 @@ def extract_text_from_file(path: str) -> str:
         return _extract_docx(path)
     if suffix in (".txt", ".md"):
         try:
-            return Path(path).read_text(encoding="utf-8", errors="ignore")
+            text = Path(path).read_text(encoding="utf-8", errors="ignore")
+            return strip_sphinx_index(text)
         except Exception:
             return ""
     # Fallback: try reading bytes and decode
     try:
         b = Path(path).read_bytes()
-        return b.decode("utf-8", errors="ignore")
+        text = b.decode("utf-8", errors="ignore")
+        return strip_sphinx_index(text)
     except Exception:
         return ""
 
@@ -76,6 +79,58 @@ def _extract_docx(path: str) -> str:
         return "\n".join(p.text for p in doc.paragraphs)
     except Exception:
         return ""
+
+
+def strip_sphinx_index(text: str, threshold: int = 5) -> str:
+    """Remove Sphinx-generated index content from the end of a document.
+
+    Sphinx HTML documentation converted to plain text often ends with an
+    auto-generated index section containing entries of the form::
+
+        SomeName (module.path attribute), 132
+        __init__() (SomeClass method), 45
+
+    These entries are useless for RAG retrieval and actively harmful because
+    the page numbers (e.g. 132, 45) look like error code values to an LLM.
+
+    This function scans the document line by line and truncates at the first
+    position where ``threshold`` or more consecutive lines all look like
+    Sphinx index entries.
+
+    Args:
+        text: Raw document text.
+        threshold: Number of consecutive index lines that trigger truncation.
+            Default is 5, which avoids false positives on normal prose that
+            happens to contain one or two attribute references.
+
+    Returns:
+        str: Document text with the Sphinx index section removed.  If no
+        index section is detected the original text is returned unchanged.
+    """
+    # Matches lines like: "SomeName (module.path attribute/method/class), 123"
+    _index_line_re = re.compile(
+        r"^\s*[\w\.\(\)\s]+\(["
+        r"\w\.\s]+"
+        r"(?:attribute|method|class|function|module|exception)"
+        r"\)\s*,\s*\d+\s*$"
+    )
+
+    lines = text.splitlines(keepends=True)
+    consecutive = 0
+    run_start = 0
+
+    for i, line in enumerate(lines):
+        if _index_line_re.match(line):
+            if consecutive == 0:
+                run_start = i
+            consecutive += 1
+            if consecutive >= threshold:
+                # Truncate just before the start of this index run
+                return "".join(lines[:run_start])
+        else:
+            consecutive = 0
+
+    return text
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:

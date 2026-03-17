@@ -37,8 +37,8 @@ class DocumentMonitorAgent(Agent):
         name: Agent name.
         directory: Directory to monitor (create if missing).
         poll_interval_sec: Polling interval in seconds.
-        chunk_size: Character chunk size.
-        chunk_overlap: Chunk overlap in characters.
+        chunk_size: Character chunk size (default: 3000).
+        chunk_overlap: Chunk overlap in characters (default: 300).
         checkpoint_file: Path to JSON checkpoint file.
         chroma_dir: Directory for ChromaDB persistence.
         embedder: Object with an .encode(list[str], show_progress_bar=False) -> np.ndarray interface.
@@ -50,22 +50,20 @@ class DocumentMonitorAgent(Agent):
         name: str,
         directory: str,
         poll_interval_sec: int = 10,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
+        chunk_size: int = 3000,
+        chunk_overlap: int = 300,
         checkpoint_file: str = ".document_monitor/checkpoints.json",
         chroma_dir: str = ".chromadb",
         embedder: Optional[object] = None,
         embedding_model_name: str = "all-MiniLM-L6-v2",
     ) -> None:
         super().__init__(name=name)
-        chroma_dir_abs = str(Path(chroma_dir).resolve())
-        LOG.info(f"ChromaDB persist directory: {chroma_dir_abs}")
         self.directory = Path(directory)
         self.poll_interval_sec = poll_interval_sec
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.checkpoint = CheckpointStore(checkpoint_file)
-        self.chroma = ChromaWrapper(persist_directory=chroma_dir_abs)
+        self.chroma = ChromaWrapper(persist_directory=chroma_dir)
         self.collection = self.chroma.get_or_create_collection(name)
         self._last_processed_file: Optional[str] = None
         self._last_error: Optional[str] = None

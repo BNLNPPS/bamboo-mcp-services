@@ -35,8 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=".document_monitor/checkpoints.json",
         help="Checkpoint file path",
     )
-    p.add_argument("--chunk-size", type=int, default=1000, help="Chunk size in characters")
-    p.add_argument("--chunk-overlap", type=int, default=200, help="Chunk overlap in characters")
+    p.add_argument("--chunk-size", type=int, default=3000, help="Chunk size in characters")
+    p.add_argument("--chunk-overlap", type=int, default=300, help="Chunk overlap in characters")
     return p
 
 

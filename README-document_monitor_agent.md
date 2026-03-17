@@ -106,6 +106,31 @@ python -m askpanda_atlas_agents.agents.document_monitor_agent.cli --dir ./docume
 > ```
 > Subsequent runs will use the cached model automatically and do not need the flag.
 
+> **Always use an absolute path for `--chroma-dir`** to avoid the database being written to a different location depending on the working directory:
+> ```bash
+> askpanda-document-monitor-agent --dir /abs/path/to/docs --chroma-dir /abs/path/to/.chromadb
+> ```
+
+---
+
+## Re-ingestion
+
+Re-ingestion is required when:
+
+- You change `--chunk-size` or `--chunk-overlap` (existing chunks remain at the old size until wiped).
+- The ChromaDB index becomes corrupted or out of sync with the SQLite metadata.
+- You want to start fresh after adding or removing documents.
+
+To re-ingest cleanly:
+
+```bash
+# 1. Wipe the vector store and checkpoint
+rm -rf .chromadb .document_monitor/checkpoints.json
+
+# 2. Re-run the agent — it will process all files from scratch
+askpanda-document-monitor-agent --dir /abs/path/to/docs --chroma-dir /abs/path/to/.chromadb
+```
+
 ---
 
 ## Starting a new session
@@ -134,14 +159,19 @@ conda activate askpanda
 
 ## Configuration options
 
+> **Chunk size guidance:** the default of 3000 characters is a good balance for technical
+> documentation with long class or function definitions. If your documents are short
+> (e.g. individual wiki pages), a smaller value like 1000–1500 may give better retrieval
+> precision. Changing this setting requires a full re-ingestion — see [Re-ingestion](#re-ingestion).
+
 | Option | Default | Description |
 |---|---|---|
 | `--dir` | *(required)* | Directory to monitor |
 | `--poll-interval` | `10` | Poll interval in seconds |
 | `--chroma-dir` | `.chromadb` | ChromaDB persistence directory |
 | `--checkpoint-file` | `.document_monitor/checkpoints.json` | JSON checkpoint path |
-| `--chunk-size` | `1000` | Characters per chunk |
-| `--chunk-overlap` | `200` | Overlap between chunks |
+| `--chunk-size` | `3000` | Characters per chunk |
+| `--chunk-overlap` | `300` | Overlap between chunks |
 
 ---
 
