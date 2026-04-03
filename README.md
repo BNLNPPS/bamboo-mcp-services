@@ -3,7 +3,7 @@
 **AskPanDA-ATLAS Agents** is a collection of cooperative, Python-based agents that power the *AskPanDA-ATLAS* plugin for the **Bamboo Toolkit**, supporting the ATLAS Experiment.
 
 > ⚠️ **Early development**
-> This repository is under active development. The `document-monitor-agent` and `ingestion-agent` are ready for use. Other agents are planned.
+> This repository is under active development. The `document-monitor-agent`, `ingestion-agent`, and `cric-agent` are ready for use. Other agents are planned.
 
 ---
 
@@ -13,6 +13,7 @@
 |---|---|
 | `document-monitor-agent` | ✅ Ready |
 | `ingestion-agent` | ✅ Ready |
+| `cric-agent` | ✅ Ready |
 | `dast-agent` | 📋 Planned |
 | `supervisor-agent` | 📋 Planned |
 | `index-builder-agent` | 📋 Planned |
@@ -63,6 +64,22 @@ python scripts/dump_ingestion_db.py --table jobs --queue SWT2_CPB --limit 5
 
 Full documentation: [README-ingestion_agent.md](./README-ingestion_agent.md)
 
+### Run the CRIC agent
+
+```bash
+# Load CRIC queuedata once and exit:
+askpanda-cric-agent --data cric.db --once
+
+# Run as a long-lived daemon (re-reads file every 10 minutes):
+askpanda-cric-agent --data cric.db
+
+# Inspect what was loaded:
+duckdb cric.db "SELECT COUNT(*) FROM queuedata"
+duckdb cric.db "SELECT queue, status, cloud, tier FROM queuedata LIMIT 10"
+```
+
+Full documentation: [README-cric_agent.md](./README-cric_agent.md)
+
 ---
 
 ## Agents
@@ -84,6 +101,24 @@ Key features:
 - `scripts/dump_ingestion_db.py` for inspecting the database from the command line
 
 → [Full documentation](./README-ingestion_agent.md)
+
+### `cric-agent` ✅ Ready
+
+Periodically reads ATLAS queue metadata from the CRIC Computing Resource
+Information Catalogue (via CVMFS) and stores the latest snapshot in a local
+[DuckDB](https://duckdb.org) database. Uses SHA-256 content hashing to skip
+database writes when the source file has not changed since the last cycle,
+and performs a full table replace on each changed load so the database stays
+small regardless of how long the agent runs.
+
+Key features:
+- Single `queuedata` table — one row per ATLAS computing queue, ~90 columns
+- Full data dictionary in `schema_annotations.py` for use in LLM prompts
+- 10-minute poll interval with hash-based skip when CVMFS content is unchanged
+- `--data PATH` required CLI flag keeps the DB path out of the config file
+- Rotating log file, `--log-level DEBUG` support, clean Ctrl-C / SIGTERM shutdown
+
+→ [Full documentation](./README-cric_agent.md)
 
 ### `dast-agent` 📋 Planned
 
@@ -145,6 +180,7 @@ askpanda-atlas-agents/
 ├─ README.md
 ├─ README-document_monitor_agent.md
 ├─ README-ingestion_agent.md
+├─ README-cric_agent.md
 ├─ pyproject.toml
 ├─ requirements.txt
 ├─ scripts/
@@ -154,13 +190,17 @@ askpanda-atlas-agents/
 │     ├─ common/
 │     │  └─ storage/
 │     │     ├─ duckdb_store.py       # low-level DuckDB helpers
-│     │     ├─ schema.py             # DDL — single source of truth for all tables
-│     │     └─ schema_annotations.py # field descriptions for LLM context
+│     │     ├─ schema.py             # DDL — single source of truth for jobs tables
+│     │     └─ schema_annotations.py # field descriptions for LLM context (jobs + queuedata)
 │     ├─ agents/
 │     │  ├─ base.py                  # Agent lifecycle interface
 │     │  ├─ ingestion_agent/
 │     │  │  ├─ agent.py
 │     │  │  ├─ bigpanda_jobs_fetcher.py
+│     │  │  └─ cli.py
+│     │  ├─ cric_agent/
+│     │  │  ├─ agent.py
+│     │  │  ├─ cric_fetcher.py
 │     │  │  └─ cli.py
 │     │  ├─ document_monitor_agent/
 │     │  ├─ dummy_agent/
@@ -172,10 +212,12 @@ askpanda-atlas-agents/
 │     ├─ plugin/                     # Bamboo / AskPanDA plugin adapter
 │     └─ resources/
 │        └─ config/
-│           └─ ingestion-agent.yaml
+│           ├─ ingestion-agent.yaml
+│           └─ cric-agent.yaml
 ├─ tests/
 │  └─ agents/
 │     ├─ ingestion_agent/
+│     ├─ cric_agent/
 │     ├─ dummy_agent/
 │     └─ test_base_agent.py
 └─ .github/
