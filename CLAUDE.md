@@ -17,6 +17,7 @@ Two agents are production-ready; others are planned:
 |---|---|---|
 | `ingestion-agent` | ✅ Ready | `askpanda-ingestion-agent` |
 | `document-monitor-agent` | ✅ Ready | `askpanda-document-monitor-agent` |
+| `cric-agent` | ✅ Ready | `askpanda-cric-agent` |
 | `dast-agent` | 📋 Planned | — |
 | `supervisor-agent` | 📋 Planned | — |
 
@@ -60,6 +61,24 @@ askpanda-ingestion-agent \
 python scripts/dump_ingestion_db.py --count
 python scripts/dump_ingestion_db.py --table jobs --queue BNL --limit 5
 python scripts/dump_ingestion_db.py --table jobs --queue BNL --format json | jq '.pandaid'
+
+# CRIC agent — load queuedata once and exit:
+askpanda-cric-agent \
+  --data cric.db \
+  --once
+
+# CRIC agent — daemon mode (re-reads CVMFS file every 10 minutes):
+askpanda-cric-agent \
+  --data cric.db \
+  --config src/askpanda_atlas_agents/resources/config/cric-agent.yaml
+
+# Useful debug flags (same as ingestion agent):
+#   --log-level DEBUG
+#   --log-file ""             # disable file logging
+
+# Inspect the resulting database:
+duckdb cric.db "SELECT COUNT(*) FROM queuedata"
+duckdb cric.db "SELECT queue, status, cloud, tier FROM queuedata LIMIT 10"
 ```
 
 ---
@@ -67,9 +86,10 @@ python scripts/dump_ingestion_db.py --table jobs --queue BNL --format json | jq 
 ## Tests and linting
 
 ```bash
-pytest                                              # run all 29 tests
+pytest                                              # run all tests
 pytest --cov=askpanda_atlas_agents --cov-report=term-missing
 pytest tests/agents/ingestion_agent/ -v            # ingestion agent tests only
+pytest tests/agents/cric_agent/ -v                 # CRIC agent tests only
 flake8 src tests                                    # must be clean before commit
 ```
 
@@ -116,6 +136,7 @@ askpanda-atlas-agents/
 ├─ README.md                          ← project overview and quick-start
 ├─ README-ingestion_agent.md          ← ingestion agent full docs
 ├─ README-document_monitor_agent.md   ← document monitor full docs
+├─ README-cric_agent.md               ← CRIC agent full docs
 ├─ HANDOVER-bamboo-sql-tool.md        ← handover notes for the Bamboo SQL tool
 ├─ pyproject.toml                     ← dependencies, entry points, build config
 ├─ requirements.txt                   ← flat dep list (mirrors pyproject.toml)
@@ -130,6 +151,10 @@ askpanda-atlas-agents/
 │  │  │  ├─ agent.py                  ← IngestionAgent, config dataclasses
 │  │  │  ├─ bigpanda_jobs_fetcher.py  ← BigPanda download loop + DB writes
 │  │  │  └─ cli.py                    ← CLI entry point
+│  │  ├─ cric_agent/
+│  │  │  ├─ agent.py                  ← CricAgent, CricAgentConfig
+│  │  │  ├─ cric_fetcher.py           ← file read, hash check, DROP/CREATE/INSERT
+│  │  │  └─ cli.py                    ← CLI entry point (askpanda-cric-agent)
 │  │  ├─ document_monitor_agent/      ← ChromaDB-backed document watcher
 │  │  └─ dummy_agent/                 ← minimal no-op agent (template + tests)
 │  └─ common/
@@ -137,18 +162,59 @@ askpanda-atlas-agents/
 │     │  └─ source.py                 ← file/URL fetch with content hashing
 │     └─ storage/
 │        ├─ duckdb_store.py           ← low-level DuckDB helpers
-│        ├─ schema.py                 ← DDL + apply_schema() + migration
-│        └─ schema_annotations.py    ← field descriptions + get_schema_context()
+│        ├─ schema.py                 ← DDL + apply_schema() + migration (jobs tables)
+│        └─ schema_annotations.py    ← field descriptions for jobs + queuedata tables
 ├─ tests/
 │  └─ agents/
 │     ├─ ingestion_agent/
 │     │  ├─ test_bigpanda_jobs_fetcher.py   ← 18 tests
 │     │  └─ test_ingestion_agent.py
+│     ├─ cric_agent/
+│     │  └─ test_cric_agent.py              ← 43 tests
 │     ├─ dummy_agent/test_dummy_agent.py
 │     └─ test_base_agent.py                 ← 8 lifecycle tests
 └─ src/askpanda_atlas_agents/resources/config/
-   └─ ingestion-agent.yaml            ← default agent configuration
+   ├─ ingestion-agent.yaml            ← default ingestion agent configuration
+   └─ cric-agent.yaml                 ← default CRIC agent configuration
 ```
+
+---
+
+## CRIC agent — key design decisions
+
+**Source**: CVMFS file
+`/cvmfs/atlas.cern.ch/repo/sw/local/etc/cric_pandaqueues.json`.
+Top-level dict of `{queue_name: {field: value, ...}}` — currently ~700 queues,
+~90 fields each.
+
+**Database**: DuckDB file (path set via `--data PATH`, no default).  Single
+table `queuedata` — full replace on each changed load, no history.  A
+`snapshots` table (from `DuckDBStore`) records one audit row per fetch attempt.
+
+**Hash-based skip**: On every poll the file is read and SHA-256 hashed.  The
+DB write is skipped entirely when the hash matches the previous load.  This is
+the normal case between CVMFS refresh cycles (~30 min propagation delay).
+
+**Dynamic type inference**: Column types are inferred from the data at load
+time (`BIGINT`, `DOUBLE`, `TEXT`) rather than from a fixed DDL.  CRIC adds and
+renames fields without notice; dynamic inference avoids breakage.  Booleans
+require explicit handling because Python `bool` is a subclass of `int` — the
+`_to_cell_value` function checks `isinstance(v, bool)` before `isinstance(v,
+int)` to store them as TEXT rather than BIGINT.
+
+**`_data`-suffix fields dropped**: `coreenergy_data`, `corepower_data`, and
+`maxdiskio_data` are internal CRIC resolution-chain dicts.  They are stripped
+in `_build_rows` via `_SKIP_FIELDS` and never written to the database.
+
+**`--data PATH` required CLI flag**: The DuckDB path is not in the YAML config.
+Keeping it as a required flag makes it impossible to run the agent without
+explicitly choosing where the database lives, which prevents accidental
+overwrites in shared environments.
+
+**DuckDB concurrency**: DuckDB allows multiple readers but only one writer.
+The CRIC agent writes to `cric.db`; the ingestion agent writes to `jobs.duckdb`
+(or whatever path is configured).  These are separate files — no write
+conflicts.  AskPanDA / Bamboo should open both files read-only.
 
 ---
 
@@ -187,7 +253,10 @@ this was fixed to a composite `PRIMARY KEY (id, _queue)`.
 ## Annotated schema for LLM context
 
 `schema_annotations.py` provides plain-English descriptions of every database
-column, intended for injection into LLM system prompts:
+column, intended for injection into LLM system prompts.  It covers two
+databases:
+
+**BigPanda jobs** (`jobs.duckdb`):
 
 ```python
 from askpanda_atlas_agents.common.storage.schema_annotations import get_schema_context
@@ -195,6 +264,17 @@ from askpanda_atlas_agents.common.storage.schema_annotations import get_schema_c
 # Returns a multi-line "Table: … column TYPE description" block
 context = get_schema_context()                  # all three tables
 context = get_schema_context(["jobs"])          # jobs only
+```
+
+**CRIC queuedata** (`cric.db`):
+
+```python
+from askpanda_atlas_agents.common.storage.schema_annotations import (
+    get_queuedata_schema_context,
+    QUEUEDATA_FIELD_DESCRIPTIONS,
+)
+
+context = get_queuedata_schema_context()        # queuedata table
 ```
 
 See `HANDOVER-bamboo-sql-tool.md` for how to use this when building the
@@ -221,6 +301,10 @@ When adding a new agent:
 2. Add a `cli.py` entry point
 3. Register in `pyproject.toml` under `[project.scripts]`
 4. Add tests (follow `tests/agents/dummy_agent/` as a template)
+
+The `cric_agent` is a good second reference example: simpler than
+`ingestion_agent` (no threads, no BigPanda API), and demonstrates the
+hash-based skip pattern for file-backed sources.
 
 ---
 
