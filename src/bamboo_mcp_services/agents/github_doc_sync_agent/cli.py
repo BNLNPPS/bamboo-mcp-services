@@ -9,7 +9,6 @@ import os
 import signal
 import sys
 import time
-from pathlib import Path
 from typing import Optional, Sequence
 
 import yaml
@@ -181,6 +180,73 @@ def _load_repo_configs(cfg: dict) -> list[RepoConfig]:
     ]
 
 
+def _load_config_file(config_path: str):
+    """Read and parse the YAML config file.
+
+    Args:
+        config_path: Path to the YAML configuration file.
+
+    Returns:
+        Parsed config dict, or None on error.
+    """
+    try:
+        with open(config_path, "r") as fh:
+            cfg = yaml.safe_load(fh)
+    except OSError as exc:
+        logger.error("Cannot read config file %r: %s", config_path, exc)
+        return None
+    return cfg if cfg is not None else {}
+
+
+def _run_agent(agent: GithubDocSyncAgent, once: bool, tick_interval_s: float) -> int:
+    """Start the agent, run once or loop, then stop it.
+
+    Args:
+        agent: Configured agent instance.
+        once: If True, run a single tick then return.
+        tick_interval_s: Seconds to sleep between ticks in daemon mode.
+
+    Returns:
+        Exit code (0 for success, 1 for unhandled error).
+    """
+    try:
+        agent.start()
+        logger.info("Agent started (state=%s)", agent.state.value)
+
+        if once:
+            logger.info("--once flag set: running a single tick then exiting.")
+            agent.tick()
+            h = agent.health()
+            logger.info(
+                "Tick complete. last_repos_synced=%s  last_error_repo=%s",
+                h.details.get("last_repos_synced"),
+                h.details.get("last_error_repo") or "none",
+            )
+        else:
+            logger.info(
+                "Entering run loop (tick_interval=%.1fs). "
+                "Press Ctrl-C or send SIGTERM to stop.",
+                tick_interval_s,
+            )
+            while True:
+                agent.tick()
+                time.sleep(tick_interval_s)
+
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received — shutting down.")
+    except Exception:
+        logger.exception("Unhandled exception in agent run loop.")
+        return 1
+    finally:
+        try:
+            agent.stop()
+            logger.info("Agent stopped cleanly (state=%s)", agent.state.value)
+        except Exception:
+            logger.exception("Error while stopping agent.")
+
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI entry point for the GitHub documentation sync agent.
 
@@ -214,15 +280,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     logger.info("Starting (config=%s)", args.config)
 
-    try:
-        with open(args.config, "r") as fh:
-            cfg = yaml.safe_load(fh)
-    except OSError as exc:
-        logger.error("Cannot read config file %r: %s", args.config, exc)
-        return 1
-
+    cfg = _load_config_file(args.config)
     if cfg is None:
-        cfg = {}
+        return 1
 
     try:
         repos = _load_repo_configs(cfg)
@@ -244,7 +304,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     refresh_interval_s = int(cfg.get("refresh_interval_s", 3600))
     tick_interval_s = float(cfg.get("tick_interval_s", 60.0))
 
-    # Surface GITHUB_TOKEN if present, so users know it has been picked up.
     github_token = os.environ.get("GITHUB_TOKEN")
     if github_token:
         logger.info("GITHUB_TOKEN detected — will be used for GitHub API requests")
@@ -274,42 +333,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     agent = GithubDocSyncAgent(config=config)
     signal.signal(signal.SIGTERM, _make_signal_handler(agent))
 
-    try:
-        agent.start()
-        logger.info("Agent started (state=%s)", agent.state.value)
-
-        if args.once:
-            logger.info("--once flag set: running a single tick then exiting.")
-            agent.tick()
-            h = agent.health()
-            logger.info(
-                "Tick complete. last_repos_synced=%s  last_error_repo=%s",
-                h.details.get("last_repos_synced"),
-                h.details.get("last_error_repo") or "none",
-            )
-        else:
-            logger.info(
-                "Entering run loop (tick_interval=%.1fs). "
-                "Press Ctrl-C or send SIGTERM to stop.",
-                tick_interval_s,
-            )
-            while True:
-                agent.tick()
-                time.sleep(tick_interval_s)
-
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received — shutting down.")
-    except Exception:
-        logger.exception("Unhandled exception in agent run loop.")
-        return 1
-    finally:
-        try:
-            agent.stop()
-            logger.info("Agent stopped cleanly (state=%s)", agent.state.value)
-        except Exception:
-            logger.exception("Error while stopping agent.")
-
-    return 0
+    return _run_agent(agent, args.once, tick_interval_s)
 
 
 if __name__ == "__main__":

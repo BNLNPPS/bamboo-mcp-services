@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -569,7 +569,7 @@ class TestCLIMain:
         with patch(_SYNC_REPO, side_effect=fake_sync):
             with patch(
                 "bamboo_mcp_services.agents.github_doc_sync_agent.agent.GithubDocSyncAgent.start"
-            ) as mock_start, patch(
+            ), patch(
                 "bamboo_mcp_services.agents.github_doc_sync_agent.agent.GithubDocSyncAgent.tick"
             ), patch(
                 "bamboo_mcp_services.agents.github_doc_sync_agent.agent.GithubDocSyncAgent.stop"
