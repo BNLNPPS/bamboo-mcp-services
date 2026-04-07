@@ -642,9 +642,11 @@ class TestWithinHoursFirstRun:
     def test_second_run_skips_old_commit(self, tmp_path):
         """State file present + within_hours exceeded → should skip."""
         import json
-        dest = tmp_path / "raw"
-        dest.mkdir()
-        state_path = dest / ".sync_state.json"
+        dest_root = tmp_path / "raw"
+        # State file lives inside the owner/repo subdirectory.
+        per_repo_dest = dest_root / "owner" / "repo"
+        per_repo_dest.mkdir(parents=True)
+        state_path = per_repo_dest / ".sync_state.json"
         state_path.write_text(json.dumps({
             "last_commit_sha": "oldhash",
             "last_sync_time": "2026-01-01T00:00:00+00:00",
@@ -652,7 +654,7 @@ class TestWithinHoursFirstRun:
         }))
         cfg = RepoConfig(
             name="owner/repo",
-            destination=str(dest),
+            destination=str(dest_root),
             within_hours=10,
             normalize_for_rag=False,
         )

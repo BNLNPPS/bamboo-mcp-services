@@ -6,7 +6,7 @@ A production-oriented agent that watches a directory for new or changed document
 
 ## What it does
 
-- Monitors a directory (non-recursive) for file changes via polling.
+- Monitors a directory (including all subdirectories) for file changes via polling.
 - Extracts text from `.pdf`, `.docx`, `.txt`, and `.md` files.
 - Splits text into overlapping character chunks.
 - Generates deterministic chunk IDs (stable across re-ingestion).
@@ -90,14 +90,31 @@ pip install -e .
 
 ## Running the agent
 
+### One-shot (recommended for cron and pipeline use)
+
+Process all new or changed files once and exit:
+
+```bash
+bamboo-document-monitor --dir ./documents --chroma-dir .chromadb --once
+```
+
+This is the recommended mode when running after `bamboo-github-sync` in a
+pipeline or cron job — it processes whatever was downloaded and exits cleanly.
+
+### Long-running daemon
+
+Poll continuously, picking up new files as they arrive:
+
 ```bash
 bamboo-document-monitor --dir ./documents --poll-interval 10 --chroma-dir .chromadb
 ```
 
-Or via module:
+Stop with Ctrl-C or SIGTERM.
+
+### Via module
 
 ```bash
-python -m bamboo_mcp_services.agents.document_monitor_agent.cli --dir ./documents
+python -m bamboo_mcp_services.agents.document_monitor_agent.cli --dir ./documents --once
 ```
 
 > **First run on a new machine:** the agent loads the embedding model from local cache and avoids network calls on startup. This means the model must be downloaded at least once first. On a fresh machine, trigger the download by running with `HF_HUB_OFFLINE=0`:
@@ -166,12 +183,13 @@ conda activate bamboo-mcp-services
 
 | Option | Default | Description |
 |---|---|---|
-| `--dir` | *(required)* | Directory to monitor |
-| `--poll-interval` | `10` | Poll interval in seconds |
+| `--dir` | *(required)* | Directory to monitor (all subdirectories are included) |
+| `--poll-interval` | `10` | Poll interval in seconds (daemon mode only) |
 | `--chroma-dir` | `.chromadb` | ChromaDB persistence directory |
 | `--checkpoint-file` | `.document_monitor/checkpoints.json` | JSON checkpoint path |
 | `--chunk-size` | `3000` | Characters per chunk |
 | `--chunk-overlap` | `300` | Overlap between chunks |
+| `--once` | off | Run a single poll cycle then exit |
 
 ---
 

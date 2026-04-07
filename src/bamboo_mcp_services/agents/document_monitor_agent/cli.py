@@ -37,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--chunk-size", type=int, default=3000, help="Chunk size in characters")
     p.add_argument("--chunk-overlap", type=int, default=300, help="Chunk overlap in characters")
+    p.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single poll cycle then exit (useful for cron / one-shot invocations).",
+    )
     return p
 
 
@@ -163,14 +168,16 @@ def _agent_is_running(obj: Any) -> bool:
         return False
 
 
-def _run_agent(agent: DocumentMonitorAgent) -> None:
+def _run_agent(agent: DocumentMonitorAgent, once: bool = False) -> None:
     """Start *agent* and block until it stops or is interrupted.
 
-    Calls ``agent.start()``, then repeatedly invokes ``agent.tick()``
-    for as long as :func:`_agent_is_running` returns ``True``.
+    Calls ``agent.start()``, then either runs a single tick (``once=True``)
+    or repeatedly invokes ``agent.tick()`` for as long as
+    :func:`_agent_is_running` returns ``True``.
 
     Shutdown is triggered by one of the following:
 
+    * ``once=True`` — a single tick is executed and the agent is stopped.
     * The agent transitions out of the running state on its own.
     * A ``KeyboardInterrupt`` (``SIGINT``) is received, which causes
       ``agent.request_stop()`` to be called before the loop exits.
@@ -185,9 +192,14 @@ def _run_agent(agent: DocumentMonitorAgent) -> None:
         agent: A started (or about-to-be-started) agent instance that
             exposes ``start()``, ``tick()``, ``request_stop()``, and
             ``stop()`` methods.
+        once: If ``True``, run a single tick then return.
     """
     agent.start()
     try:
+        if once:
+            logger.info("--once flag set: running a single poll cycle then exiting.")
+            agent.tick()
+            return
         while _agent_is_running(agent):
             agent.tick()
     except KeyboardInterrupt:
@@ -232,7 +244,7 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     agent = _build_agent(args)
     signal.signal(signal.SIGTERM, _make_signal_handler(agent))
-    _run_agent(agent)
+    _run_agent(agent, once=args.once)
 
 
 if __name__ == "__main__":

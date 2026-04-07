@@ -84,8 +84,9 @@ The two agents form a pipeline:
 github-doc-sync-agent        document-monitor-agent
 ─────────────────────        ──────────────────────
 polls GitHub                 watches ./data/*/normalized/
-downloads changed files  →   chunks and embeds files  →  ChromaDB
-writes to normalized/        updates checkpoints
+downloads changed files  →   recurses into subdirectories
+writes to normalized/        chunks and embeds files  →  ChromaDB
+owner/repo/...               updates checkpoints
 ```
 
 Neither agent needs to know about the other.  They can run as separate
@@ -96,7 +97,7 @@ Example cron pipeline (daily at 02:00):
 
 ```cron
 0 2 * * *  bamboo-github-sync --config /path/to/repos.yaml --once
-5 2 * * *  bamboo-document-monitor --dir /path/to/data --once
+5 2 * * *  bamboo-document-monitor --dir /path/to/RAG --chroma-dir /path/to/.chromadb --once
 ```
 
 ---
