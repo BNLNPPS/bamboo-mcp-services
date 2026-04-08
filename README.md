@@ -219,6 +219,7 @@ Stop with Ctrl+C or SIGTERM. When adding a new agent, register its entry point i
 ```
 bamboo-mcp-services/
 ├─ README.md
+├─ CHANGELOG.md
 ├─ README-document_monitor_agent.md
 ├─ README-ingestion_agent.md
 ├─ README-cric_agent.md
@@ -226,10 +227,12 @@ bamboo-mcp-services/
 ├─ pyproject.toml
 ├─ requirements.txt
 ├─ scripts/
-│  └─ dump_ingestion_db.py       # inspect the ingestion database from the CLI
+│  ├─ dump_ingestion_db.py       # inspect the ingestion database from the CLI
+│  └─ bump_version.py            # bump the version string across all files
 ├─ src/
 │  └─ bamboo_mcp_services/
 │     ├─ common/
+│     │  ├─ cli.py                   # shared startup banner helper
 │     │  └─ storage/
 │     │     ├─ duckdb_store.py       # low-level DuckDB helpers
 │     │     ├─ schema.py             # DDL — single source of truth for jobs tables
@@ -280,6 +283,7 @@ bamboo-mcp-services/
 
 Agents draw on shared components in `common/`:
 
+- **CLI utilities** — `common/cli.py` provides `log_startup_banner()`, called by every agent on startup to emit a consistent `prog  version=X.Y.Z  python=A.B.C` log line
 - **Storage** — DuckDB store, typed schema DDL (`schema.py`), field annotations for LLM context (`schema_annotations.py`)
 - **Vector stores** — ChromaDB, embedding adapters
 - **PanDA / BigPanDA** — metadata fetching, snapshot downloads
@@ -309,6 +313,8 @@ pylint src/bamboo_mcp_services
 **`ModuleNotFoundError: bamboo_mcp_services`** — run `pip install -e .` from the repository root (where `pyproject.toml` lives).
 
 **Editable install fails** — confirm that `src/bamboo_mcp_services/` exists and contains an `__init__.py`.
+
+**Agent logs wrong version after `bump_version.py`** — `importlib.metadata` reads the version baked in at install time. Run `pip install -e .` after every bump.
 
 ---
 
